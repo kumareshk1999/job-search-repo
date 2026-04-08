@@ -1,11 +1,10 @@
 import streamlit as st
-import feedparser
 import requests
-import webbrowser
+import pandas as pd
 
-st.set_page_config(page_title="Job Assistant", layout="wide")
+st.set_page_config(page_title="AI Job Assistant", layout="wide")
 
-st.title("🚀 Smart Job Assistant (India)")
+st.title("🚀 AI Job Assistant (Pro Version)")
 
 # 🔍 Inputs
 keyword = st.text_input("Enter Skill / Role", "python developer")
@@ -16,123 +15,106 @@ exp_level = st.selectbox(
     ["Fresher", "Junior", "Mid", "Senior"]
 )
 
-# 🔹 Keyword Expansion
-def expand_keywords(keyword):
-    keyword = keyword.lower()
-
-    mapping = {
-        "python": ["python developer", "django", "flask"],
-        "java": ["java developer", "spring boot"],
-        "db2": ["db2 dba", "database administrator"],
-        "full stack": ["full stack developer", "mern", "react node"]
-    }
-
-    return mapping.get(keyword, [keyword])
+# 🔑 Adzuna API
+APP_ID = "855feb69"
+APP_KEY = "d78e53de76f6ad0a1f0699d2915e7e45"
 
 
-# 🔹 Indeed Fetch (may fail sometimes)
-def fetch_indeed_jobs(keyword, location):
+# 🔹 Fetch Jobs (Google-like aggregation)
+def fetch_jobs(keyword):
     jobs = []
     try:
-        url = f"https://www.indeed.co.in/rss?q={keyword.replace(' ','+')}&l={location}"
-        feed = feedparser.parse(url)
+        url = f"https://api.adzuna.com/v1/api/jobs/in/search/1?app_id={APP_ID}&app_key={APP_KEY}&results_per_page=50&what={keyword}"
 
-        for entry in feed.entries:
-            jobs.append({
-                "title": entry.title,
-                "company": entry.get("author", "Unknown"),
-                "link": entry.link
-            })
-    except:
-        pass
+        res = requests.get(url).json()
 
-    return jobs
-
-
-# 🔹 Remote Jobs API (ALWAYS RETURNS DATA)
-def fetch_remote_jobs(keyword):
-    jobs = []
-    try:
-        url = f"https://remotive.com/api/remote-jobs?search={keyword}"
-        response = requests.get(url).json()
-
-        for job in response.get("jobs", []):
+        for job in res.get("results", []):
             jobs.append({
                 "title": job["title"],
-                "company": job["company_name"],
-                "link": job["url"]
+                "company": job["company"]["display_name"],
+                "link": job["redirect_url"],
+                "description": job.get("description", "")
             })
     except:
         pass
 
     return jobs
+
+
+# 🔹 AI Scoring (Keyword-based)
+def score_job(job, keyword):
+    score = 0
+    title = job["title"].lower()
+    desc = job["description"].lower()
+    keyword = keyword.lower()
+
+    # Strong match
+    if keyword in title:
+        score += 50
+
+    # Partial match
+    for word in keyword.split():
+        if word in title:
+            score += 10
+        if word in desc:
+            score += 5
+
+    # Bonus keywords
+    bonus_skills = ["python", "java", "react", "node", "sql"]
+    for skill in bonus_skills:
+        if skill in desc:
+            score += 2
+
+    return score
 
 
 # 🔹 Experience Filter
-def filter_experience(jobs, exp_level):
-    filtered = []
+def filter_experience(job, level):
+    title = job["title"].lower()
 
-    for job in jobs:
-        title = job["title"].lower()
+    if level == "Fresher":
+        return not any(x in title for x in ["senior", "lead", "manager"])
 
-        if exp_level == "Fresher":
-            if any(x in title for x in ["senior", "lead", "manager"]):
-                continue
+    if level == "Junior":
+        return "senior" not in title
 
-        elif exp_level == "Junior":
-            if "senior" in title:
-                continue
+    if level == "Senior":
+        return any(x in title for x in ["senior", "lead"])
 
-        elif exp_level == "Senior":
-            if not any(x in title for x in ["senior", "lead"]):
-                continue
-
-        filtered.append(job)
-
-    return filtered
+    return True
 
 
 # 🔘 Search
 if st.button("🔍 Search Jobs"):
 
-    all_jobs = []
+    jobs = fetch_jobs(keyword)
 
-    keywords = expand_keywords(keyword)
+    if not jobs:
+        st.error("No jobs found. Try broader keyword like 'developer'")
+    else:
+        # Apply filters + scoring
+        processed_jobs = []
 
-    # 1️⃣ Try Indeed
-    for key in keywords:
-        all_jobs.extend(fetch_indeed_jobs(key, location))
+        for job in jobs:
+            if filter_experience(job, exp_level):
+                score = score_job(job, keyword)
+                job["score"] = score
+                processed_jobs.append(job)
 
-    # 2️⃣ Always add Remote jobs
-    for key in keywords:
-        all_jobs.extend(fetch_remote_jobs(key))
+        # Sort by score
+        processed_jobs = sorted(processed_jobs, key=lambda x: x["score"], reverse=True)
 
-    # Remove duplicates
-    all_jobs = list({job['link']: job for job in all_jobs}.values())
+        st.success(f"Found {len(processed_jobs)} jobs")
 
-    # Apply experience filter
-    all_jobs = filter_experience(all_jobs, exp_level)
+        # 📊 Display as table
+        df = pd.DataFrame(processed_jobs)
 
-    # 🚨 FINAL FALLBACK (NEVER EMPTY)
-    if len(all_jobs) == 0:
-        st.warning("No jobs found. Showing general developer jobs...")
-        all_jobs = fetch_remote_jobs("developer")
+        for i, job in enumerate(processed_jobs[:50]):
 
-    st.success(f"Found {len(all_jobs)} jobs")
+            st.subheader(f"{job['title']}  🔥 {job['score']}% match")
+            st.write(f"🏢 {job['company']}")
 
-    # 📋 Display
-    for i, job in enumerate(all_jobs[:50]):  # limit for performance
+            # ✅ APPLY BUTTON (WORKING)
+            st.markdown(f"[👉 Apply Now]({job['link']})")
 
-        st.subheader(job["title"])
-        st.write(f"🏢 {job['company']}")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            if st.button(f"Apply {i}"):
-                webbrowser.open(job["link"])
-
-        with col2:
-            st.markdown(f"[View Job]({job['link']})")
-
-        st.divider()
+            st.divider()
